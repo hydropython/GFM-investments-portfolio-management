@@ -3,7 +3,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import numpy as np
 import os
-
+from statsmodels.tsa.seasonal import seasonal_decompose
 
 class FinancialDataEDA:
     def __init__(self, data):
@@ -44,6 +44,83 @@ class FinancialDataEDA:
             df.dropna(inplace=True)  # Drop rows with any remaining missing values
             
             self.data[ticker] = df  # Update the DataFrame after handling missing values
+    def decompose_time_series(self, ticker, column='Close', period=252):
+        """
+        Decompose the time series into trend, seasonal, and residual components.
+
+        Parameters:
+        - ticker (str): The ticker symbol of the data to decompose.
+        - column (str): The column to decompose. Default is 'Close'.
+        - period (int): The period for decomposition. Default is 252 (approx. trading days in a year).
+
+        Displays:
+        - A four-panel plot with the original series, trend, seasonal, and residual components.
+        """
+        if ticker not in self.data:
+            raise ValueError(f"The ticker '{ticker}' is not available in the dataset.")
+        
+        df = self.data[ticker]
+        
+        if column not in df.columns:
+            raise ValueError(f"The specified column '{column}' does not exist for {ticker}.")
+
+        # Ensure Date is set as index and sorted for time series decomposition
+        df['Date'] = pd.to_datetime(df['Date'])
+        df.set_index('Date', inplace=True)
+        df = df.sort_index()
+
+        # Decompose the time series
+        decomposition = seasonal_decompose(df[column], model='multiplicative', period=period)
+        
+        # Extract components
+        trend = decomposition.trend.dropna()
+        seasonal = decomposition.seasonal.dropna()
+        residual = decomposition.resid.dropna()
+
+        # Numerical output
+        print(f"\n{ticker} - Trend Component:\n", trend.describe())
+        print(f"{ticker} - Seasonal Component:\n", seasonal.describe())
+        print(f"{ticker} - Residual Component:\n", residual.describe())
+
+        # Plot decomposition
+        plt.figure(figsize=(14, 10))
+
+        # Original Series
+        plt.subplot(411)
+        plt.plot(df[column], label='Original', color='blue')
+        plt.title(f'{ticker} - Original Series', fontsize=14)
+        plt.legend(loc='upper left')
+
+        # Trend Component
+        plt.subplot(412)
+        plt.plot(trend, label='Trend', color='orange')
+        plt.title('Trend', fontsize=14)
+        plt.legend(loc='upper left')
+
+        # Seasonal Component
+        plt.subplot(413)
+        plt.plot(seasonal, label='Seasonality', color='green')
+        plt.title('Seasonality', fontsize=14)
+        plt.legend(loc='upper left')
+
+        # Residual Component
+        plt.subplot(414)
+        plt.plot(residual, label='Residuals', color='red')
+        plt.title('Residuals', fontsize=14)
+        plt.legend(loc='upper left')
+
+        # Adjust layout and save plot
+        plt.tight_layout()
+
+        # Ensure the Images directory exists
+        images_dir = '../Images'
+        os.makedirs(images_dir, exist_ok=True)
+
+        # Save the plot
+        plot_filename = os.path.join(images_dir, f'{ticker}_time_series_decomposition.png')
+        plt.savefig(plot_filename, dpi=300)
+        print(f"Plot saved as {plot_filename}")
+        plt.show()
 
     def check_basic_statistics(self):
         """Check basic statistics of the data to understand its distribution."""
