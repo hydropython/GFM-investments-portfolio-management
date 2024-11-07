@@ -27,7 +27,7 @@ The objective of this project is to develop and deploy predictive models using f
 ## Installation
 1. Clone the repository:
    ```bash
-   git clone https://github.com/yourusername/gmf-investments.git
+   git clone https://github.com/hydropython/GFM-investments-portfolio-management.git)
 
 2. Navigate into the project folder
    ````bash
