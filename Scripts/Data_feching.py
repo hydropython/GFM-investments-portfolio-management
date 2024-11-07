@@ -2,6 +2,7 @@ import yfinance as yf
 import matplotlib.pyplot as plt
 import seaborn as sns
 import pandas as pd
+import logging
 
 class FinancialDataFetcher:
     def __init__(self, tickers, start_date, end_date, save_path, image_save_path):
@@ -12,19 +13,25 @@ class FinancialDataFetcher:
         self.image_save_path = image_save_path
         self.data = {}
 
+        # Set up logging
+        logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+        self.logger = logging.getLogger(__name__)
+
     def fetch_data(self):
         """Fetch historical data for each ticker and store in a dictionary."""
         for ticker in self.tickers:
+            self.logger.info(f"Fetching data for {ticker} from {self.start_date} to {self.end_date}")
             data = yf.download(ticker, start=self.start_date, end=self.end_date)
             self.data[ticker] = data
+            
             # Check for any missing data in SPY
             if ticker == 'SPY':
-                print(f"\nFirst few rows of SPY data:")
-                print(data.head())
-            # Save each dataframe to a CSV file in the ../Data/ directory
+                self.logger.info(f"First few rows of SPY data:\n{data.head()}")
+            
+            # Save each dataframe to a CSV file
             file_path = f"{self.save_path}/{ticker}_historical_data.csv"
             data.to_csv(file_path)
-            print(f"Data for {ticker} saved to {file_path}.")
+            self.logger.info(f"Data for {ticker} saved to {file_path}.")
 
     def calculate_volatility(self, window=30):
         """Calculate rolling volatility for each asset."""
@@ -34,11 +41,10 @@ class FinancialDataFetcher:
             df['Volatility'] = df['Daily Return'].rolling(window=window).std() * (252 ** 0.5)  # Annualized volatility
             volatility[ticker] = df['Volatility']
         
-        # Display the volatility values for each ticker
-        print("\nAnnualized Volatility for each asset:")
+        # Log the volatility values for each ticker
+        self.logger.info("\nAnnualized Volatility for each asset:")
         for ticker, vol in volatility.items():
-            # Access the last value in the volatility series and format it
-            print(f"{ticker}: {vol.iloc[-1]:.4f}")  # Access the latest volatility value
+            self.logger.info(f"{ticker}: {vol.iloc[-1]:.4f}")  # Log the latest volatility value
 
         return volatility
 
@@ -57,7 +63,9 @@ class FinancialDataFetcher:
         plt.tight_layout()
 
         # Save the figure to the Images folder
-        plt.savefig(f'{self.image_save_path}/volatility_comparison.png')
+        plot_path = f'{self.image_save_path}/volatility_comparison.png'
+        plt.savefig(plot_path)
+        self.logger.info(f"Volatility comparison plot saved to {plot_path}.")
         plt.show()
 
     def plot_data(self):
@@ -106,7 +114,7 @@ class FinancialDataFetcher:
         # Save the figure to the specified path
         image_file_path = f"{self.image_save_path}/financial_data_overview.png"
         plt.savefig(image_file_path, bbox_inches='tight')
-        print(f"Figure saved to {image_file_path}.")
+        self.logger.info(f"Figure saved to {image_file_path}.")
 
         # Show the plot
         plt.show()
@@ -118,5 +126,5 @@ class FinancialDataFetcher:
     def display_data_summary(self):
         """Display summary of fetched data."""
         for ticker, df in self.data.items():
-            print(f"\nSummary of data for {ticker}:")
-            print(df.head())
+            self.logger.info(f"\nSummary of data for {ticker}:")
+            self.logger.info(f"\n{df.head()}")
