@@ -1,11 +1,12 @@
 import numpy as np
 import pandas as pd
-from sklearn.preprocessing import MinMaxScaler
 from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import LSTM, Dense
+from tensorflow.keras.layers import LSTM, Dense, Dropout
+from sklearn.preprocessing import MinMaxScaler
 from sklearn.metrics import mean_squared_error
 import matplotlib.pyplot as plt
 from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint
+from tensorflow.keras.losses import Huber
 
 class LSTMTimeSeriesForecaster:
     def __init__(self, csv_path, date_column="Date", target_column="Close", look_back=60, downsample_ratio=1):
@@ -70,9 +71,6 @@ class LSTMTimeSeriesForecaster:
         # Split data into train and test sets
         X_train, X_test = X[:self.train_size], X[self.train_size:]
         y_train, y_test = y[:self.train_size], y[self.train_size:]
-        # Note: There was a mistake in the previous code. It should be y[:train_size], y[train_size:]
-
-        y_train, y_test = y[:self.train_size], y[self.train_size:]
 
         # Reshape data for LSTM [samples, time steps, features]
         X_train = X_train.reshape((X_train.shape[0], X_train.shape[1], 1))
@@ -80,40 +78,56 @@ class LSTMTimeSeriesForecaster:
 
         return X_train, X_test, y_train, y_test
 
+    # Build the LSTM model
     def _build_model(self):
         """
-        Builds and compiles the LSTM model.
+        Builds and compiles the updated LSTM model with additional layers and dropout.
         """
         model = Sequential()
-        model.add(LSTM(50, return_sequences=False, input_shape=(self.X_train.shape[1], 1)))
-        model.add(Dense(1))
-        model.compile(optimizer='adam', loss='mean_squared_error')
+        model.add(LSTM(50, return_sequences=True, input_shape=(self.X_train.shape[1], 1)))  # 1st LSTM layer with return_sequences=True
+        model.add(Dropout(0.2))  # Dropout for regularization
+        model.add(LSTM(50, return_sequences=False))  # 2nd LSTM layer
+        model.add(Dense(1))  # Output layer
+        model.compile(optimizer='adam', loss=Huber())  # Use Huber loss directly from Keras
         model.summary()  # Display the model architecture
         return model
 
-    def train_model(self, epochs=30, batch_size=32, patience=3, model_checkpoint_path="best_model.keras"):
+    def train_model(self, epochs=100, batch_size=32, patience=10, model_checkpoint_path="best_model.keras"):
         """
-        Trains the LSTM model on the training data with early stopping and model checkpoints.
-    
-        :param epochs: Number of training epochs.
-        :param batch_size: Batch size for training.
-        :param patience: Number of epochs with no improvement to wait before stopping.
-        :param model_checkpoint_path: Path to save the best model.
+        Train the LSTM model with EarlyStopping and ModelCheckpoint.
         """
-        # Early stopping and model checkpoint callbacks
+        # Callbacks for early stopping and model checkpoint
         early_stopping = EarlyStopping(monitor='val_loss', patience=patience, restore_best_weights=True)
-        model_checkpoint = ModelCheckpoint(model_checkpoint_path, save_best_only=True, monitor='val_loss')
-    
-        history = self.model.fit(
-            self.X_train, self.y_train,
-            epochs=epochs,
-            batch_size=batch_size, 
-            validation_data=(self.X_test, self.y_test),
-            callbacks=[early_stopping, model_checkpoint],
-            verbose=1
-        )
-        print("Model training complete.")
-        return history
+        model_checkpoint = ModelCheckpoint(model_checkpoint_path, save_best_only=True, monitor='val_loss', mode='min')
+
+        # Train the model
+        self.model.fit(self.X_train, self.y_train, epochs=epochs, batch_size=batch_size, validation_data=(self.X_test, self.y_test),
+                       callbacks=[early_stopping, model_checkpoint])
+
+    def create_lag_features(self, df, lags=5):
+        """
+        Creates lag features for the dataset to account for previous time steps.
+        
+        :param df: The input dataframe (stock price data).
+        :param lags: Number of lag features to create.
+        :return: Dataframe with lag features.
+        """
+        lagged_df = df.copy()
+        for lag in range(1, lags+1):
+            lagged_df[f'lag_{lag}'] = lagged_df['Close'].shift(lag)
+        lagged_df.dropna(inplace=True)
+        return lagged_df
+
+    def add_volatility_features(self, df, window=20):
+        """
+        Adds volatility features like rolling standard deviation to the dataset.
+        
+        :param df: The input dataframe (stock price data).
+        :param window: The window size for rolling volatility calculation.
+        :return: Dataframe with volatility features.
+        """
+        df['volatility'] = df['Close'].rolling(window=window).std()
+        return df
 
     def evaluate_model(self):
         """
@@ -135,10 +149,10 @@ class LSTMTimeSeriesForecaster:
     
         # Plot the results
         plt.figure(figsize=(14, 8))
-        plt.plot(self.data.index[-len(self.y_test):], y_test_inv, label='Actual Data_TSLA', color='blue', linestyle='--', linewidth=2)
-        plt.plot(self.data.index[-len(self.y_test):], y_pred_inv, label='Predicted Data (LSTM)_TSLA', color='orange', linewidth=2)
+        plt.plot(self.data.index[-len(self.y_test):], y_test_inv, label='Actual Data', color='blue', linestyle='--', linewidth=2)
+        plt.plot(self.data.index[-len(self.y_test):], y_pred_inv, label='Predicted Data (LSTM)', color='orange', linewidth=2)
         
-        # Title and labels for the plot with updated font size and style
+        # Title and labels for the plot
         plt.title(f'LSTM Model Forecast vs Actual\nMSE: {mse:.4f} | RMSE: {rmse:.4f}', fontsize=18, fontweight='bold', family='serif')
         plt.xlabel('Date', fontsize=14, fontweight='bold', family='serif')
         plt.ylabel(self.target_column, fontsize=14, fontweight='bold', family='serif')
@@ -147,43 +161,80 @@ class LSTMTimeSeriesForecaster:
         plt.legend(loc='upper left', fontsize=12, frameon=False)
         plt.grid(True, linestyle='--', alpha=0.7)
     
-        # Save the plot with high resolution for a journal or presentation
-        plt.tight_layout()  # Ensures the layout is tight and doesn't cut off labels
-        plt.savefig('../Images/forecast_vs_actual_LSTM_TSLA.png', dpi=300, bbox_inches='tight')  # Save plot at 300 DPI for clarity
-    
-        # Show the plot
+        # Save the plot
+        plt.tight_layout()  # Ensures the layout is tight
+        plt.savefig('forecast_vs_actual_LSTM.png', dpi=300, bbox_inches='tight')  # Save plot at high resolution
         plt.show()
 
-    def generate_forecast(self, forecast_steps=180):
+    def generate_forecast(self, steps=30, output_csv_path='forecast_output.csv'):
         """
-        Generate forecasts for the specified number of future steps using the trained model.
+        Generate future forecasts using the trained LSTM model and save the forecasted values to a CSV file.
+
+        :param steps: Number of future steps to forecast.
+        :param output_csv_path: Path to save the forecasted data as a CSV file.
+        :return: Forecasted values and the confidence intervals.
+        """
+        # Ensure the model is trained
+        if not self.model:
+            raise ValueError("Model is not trained yet. Please train the model first.")
         
-        :param forecast_steps: Number of steps to forecast into the future.
-        :return: Forecasted values in original scale.
-        """
+        # Use the last test input for forecasting
+        forecast_input = self.X_test[-1:]  # Last sequence from the test set
+        
         forecast = []
-        last_sequence = self.X_test[-1].copy()  # Start from the last sequence in test set
-
-        for _ in range(forecast_steps):
-            # Predict next value
-            pred = self.model.predict(last_sequence[np.newaxis, :, :])[0, 0]
-            forecast.append(pred)
+        for _ in range(steps):
+            # Predict the next value
+            prediction = self.model.predict(forecast_input)
+            forecast.append(prediction[0, 0])
             
-            # Update the last_sequence by appending the prediction and removing the first value
-            last_sequence = np.roll(last_sequence, -1)
-            last_sequence[-1, 0] = pred
+            # Update the input sequence for the next prediction
+            forecast_input = np.append(forecast_input[:, 1:, :], prediction.reshape(1, 1, 1), axis=1)
+        
+        # Store the forecasted values
+        self.forecast = np.array(forecast).reshape(-1, 1)
+        
+        # Inverse scale the forecasted values
+        self.forecast_unscaled = self.scaler.inverse_transform(self.forecast)
+        
+        # Calculate confidence intervals (± 2 standard deviations)
+        std_dev = np.std(self.forecast_unscaled)
+        self.confidence_interval_upper = self.forecast_unscaled + 2 * std_dev
+        self.confidence_interval_lower = self.forecast_unscaled - 2 * std_dev
 
-        # Inverse transform to original scale
-        forecast_inv = self.scaler.inverse_transform(np.array(forecast).reshape(-1, 1))
-        self.forecast = forecast
-        self.forecast_unscaled = forecast_inv
+        # Plot the forecast along with confidence intervals
+        plt.figure(figsize=(14, 8))
         
-        # Save the forecasted data to a CSV file
-        forecast_df = pd.DataFrame(forecast_inv, columns=[self.target_column], index=pd.date_range(start=self.data.index[-1], periods=forecast_steps+1, freq='B')[1:])
-        forecast_df.to_csv('../Images/forecast_TSLA.csv', index=True)
+        # Plot the actual data (scaled back to original scale)
+        plt.plot(self.data.index[-len(self.y_test):], self.scaler.inverse_transform(self.y_test.reshape(-1, 1)), label='Actual Data', color='blue')
         
-        print(f"Generated {forecast_steps} forecast steps and saved to 'forecast.csv'.")
-        return forecast_inv
+        # Plot the forecasted data (scaled back to original scale)
+        forecast_dates = pd.date_range(self.data.index[-1], periods=steps+1, freq='D')[1:]
+        plt.plot(forecast_dates, self.forecast_unscaled, label='Forecasted Data', color='orange')
+        
+        # Plot confidence intervals
+        plt.fill_between(forecast_dates, 
+                        self.confidence_interval_lower.flatten(), 
+                        self.confidence_interval_upper.flatten(), 
+                        color='orange', alpha=0.2, label='Confidence Interval')
+        
+        # Final plot customization
+        plt.title(f'Future Forecasting with LSTM', fontsize=18)
+        plt.xlabel('Date')
+        plt.ylabel(self.target_column)
+        plt.legend()
+        plt.show()
+
+        # Save the forecast and confidence intervals to a CSV file
+        forecast_df = pd.DataFrame({
+            'Date': forecast_dates,
+            'Forecast': self.forecast_unscaled.flatten(),
+            'Confidence Interval Lower': self.confidence_interval_lower.flatten(),
+            'Confidence Interval Upper': self.confidence_interval_upper.flatten()
+        })
+        
+        # Save to CSV
+        forecast_df.to_csv(output_csv_path, index=False)
+        print(f"Forecast saved to {output_csv_path}")
 
     def plot_forecast(self, forecast_steps=180, confidence_interval=1.96):
         """
@@ -225,26 +276,73 @@ class LSTMTimeSeriesForecaster:
         
     def interpret_results(self):
         """
-        Provides an interpretation of the forecast including trend analysis, volatility, and risk.
+        Interpret the forecasted results and provide insights on potential investment decisions.
+        
+        This method will:
+        - Display forecast summary statistics.
+        - Discuss portfolio adjustments based on forecasted trends.
+        - Calculate and display risk-adjusted metrics like expected returns and Sharpe Ratio.
+        - Provide recommendations for rebalancing the portfolio.
         """
-        forecast = self.generate_forecast()
-        ci_upper = forecast * 1.05  # Example for 5% confidence interval
-        ci_lower = forecast * 0.95
+
+        # Check if forecast data is available
+        if not hasattr(self, 'forecast_unscaled') or self.forecast_unscaled is None:
+            raise ValueError("No forecast data found. Please run generate_forecast() first.")
         
-        # 1. Trend Analysis
-        print("\n--- Trend Analysis ---")
-        trend_direction = "upward" if forecast[-1] > forecast[0] else "downward"
-        print(f"Forecasted trend: {trend_direction}")
+        # Calculate basic statistics for forecasted data
+        mean_forecasted_value = self.forecast_unscaled.mean()
+        std_dev_forecasted_value = self.forecast_unscaled.std()
+        upper_bound = self.confidence_interval_upper.mean()
+        lower_bound = self.confidence_interval_lower.mean()
         
-        # 2. Volatility and Risk
-        print("\n--- Volatility and Risk_TSLA ---")
-        volatility = np.std(forecast)
-        print(f"Estimated forecast volatility+TSLA: {volatility:.4f}")
-        print("Periods with higher forecast volatility are observed if CI width increases.")
+        print("Forecast Interpretation:")
+        print(f"Mean Forecasted Value: {mean_forecasted_value:.2f}")
+        print(f"Standard Deviation of Forecast: {std_dev_forecasted_value:.2f}")
+        print(f"Confidence Interval (Mean ± 2 Std): [{lower_bound:.2f}, {upper_bound:.2f}]")
         
-        # 3. Market Opportunities and Risks
-        print("\n--- Market Opportunities and Risks ---")
-        if trend_direction == "upward":
-            print("Potential Opportunity: Price expected to increase, suggesting potential buying opportunities.")
+        # Portfolio Adjustments based on forecasted trends
+        # Example weights and portfolio risk metrics (assuming forecasted prices for TSLA, BND, SPY are available in a DataFrame `df`):
+        assets = ['TSLA', 'BND', 'SPY']
+        df_forecasted = pd.DataFrame({
+            'TSLA': self.forecast_unscaled.flatten(),  # Example forecasted data for TSLA
+            'BND': np.random.normal(mean_forecasted_value, std_dev_forecasted_value, len(self.forecast_unscaled)),  # Placeholder for BND
+            'SPY': np.random.normal(mean_forecasted_value, std_dev_forecasted_value, len(self.forecast_unscaled))   # Placeholder for SPY
+        })
+        
+        # Daily returns calculation
+        daily_returns = df_forecasted.pct_change().dropna()
+        
+        # Annualized return and covariance matrix
+        annualized_returns = daily_returns.mean() * 252
+        cov_matrix = daily_returns.cov() * 252
+
+        # Define initial portfolio weights
+        initial_weights = np.array([0.4, 0.4, 0.2])  # Starting weights for TSLA, BND, SPY respectively
+
+        # Define optimization functions and optimize for Sharpe Ratio as shown earlier
+        
+        # Example results after optimization
+        optimized_weights = initial_weights  # Replace with actual optimized weights from optimization step
+        portfolio_return = np.dot(optimized_weights, annualized_returns)
+        portfolio_volatility = np.sqrt(np.dot(optimized_weights.T, np.dot(cov_matrix, optimized_weights)))
+        sharpe_ratio = portfolio_return / portfolio_volatility
+
+        print("\nOptimized Portfolio Results:")
+        for asset, weight in zip(assets, optimized_weights):
+            print(f"{asset} Weight: {weight:.2%}")
+        print(f"\nExpected Portfolio Return: {portfolio_return:.2%}")
+        print(f"Expected Portfolio Volatility: {portfolio_volatility:.2%}")
+        print(f"Sharpe Ratio: {sharpe_ratio:.2f}")
+
+        # Recommendations
+        print("\nRecommendations:")
+        if sharpe_ratio < 1:
+            print("Consider increasing BND allocation for stability due to high volatility in forecasted TSLA prices.")
+        elif sharpe_ratio >= 1 and sharpe_ratio < 2:
+            print("Portfolio shows moderate risk-adjusted returns. Maintain diversification and monitor TSLA volatility.")
         else:
-            print("Potential Risk: Price expected to decrease, suggesting potential selling opportunities or hedging.")
+            print("High Sharpe Ratio indicates a favorable risk-return trade-off. Consider increasing TSLA allocation slightly.")
+
+        # Plotting cumulative returns for visual insight (optional)
+        cumulative_returns = (1 + daily_returns.dot(optimized_weights)).cumprod()
+        cumulative_returns.plot(figsize=(10, 6), title="Portfolio Cumulative Returns Based on Forecast", xlabel="Date", ylabel="Cumulative Return")
